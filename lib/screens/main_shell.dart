@@ -40,10 +40,10 @@ class _MainShellState extends State<MainShell> {
       backgroundColor: _colorNavBackground,
       body: IndexedStack(
         index: _currentIndex,
-        children: const [
-          HomeScreen(),
-          SurveysScreen(),
-          ProfileScreen(),
+        children: [
+          HomeScreen(onOpenSurveysTap: () => _onTabTap(1)),
+          const SurveysScreen(),
+          const ProfileScreen(),
         ],
       ),
       bottomNavigationBar: Container(

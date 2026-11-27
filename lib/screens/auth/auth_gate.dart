@@ -5,7 +5,9 @@ import 'package:material_ui/material_ui.dart';
 import '../../config/dev_flags.dart';
 import '../../services/auth_service.dart';
 import '../main_shell.dart';
+import 'forgot_password_screen.dart';
 import 'login_screen.dart';
+import 'register_screen.dart';
 
 /// Decide entre login e navegação principal a partir do estado do Supabase.
 class AuthGate extends StatefulWidget {
@@ -65,7 +67,24 @@ class _AuthGateState extends State<AuthGate> {
       case AuthStatus.authenticated:
         return const MainShell();
       case AuthStatus.unauthenticated:
-        return LoginScreen(authService: _authService);
+        return LoginScreen(
+          authService: _authService,
+          onRegisterTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => RegisterScreen(authService: _authService),
+              ),
+            );
+          },
+          onForgotPasswordTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) =>
+                    ForgotPasswordScreen(authService: _authService),
+              ),
+            );
+          },
+        );
     }
   }
 }

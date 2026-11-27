@@ -1,5 +1,17 @@
 import 'package:material_ui/material_ui.dart';
 
+import '../../data/app_database.dart';
+import '../../data/repositories/point_repository.dart';
+import '../../data/repositories/survey_repository.dart';
+import '../../models/point.dart';
+import '../../models/survey.dart';
+import '../notes/notes_screen.dart';
+import '../photo/photo_screen.dart';
+import 'measure_calculations.dart';
+
+// Mantém o teste existente importando apenas measure_screen.dart.
+export 'measure_calculations.dart';
+
 // Tokens de DESIGN.md; valores que só existem no print 3 estão marcados
 // no ponto de uso.
 const Color _colorBackground = Color(0xFF234B3A);
@@ -11,103 +23,147 @@ const Color _colorSecondary = Color(0xFF68716C);
 const Color _colorWarningBackground = Color(0xFFFFF2E0);
 const Color _colorWarningIcon = Color(0xFFF48B39);
 
-/// Área do polígono por Shoelace/Gauss. 1 unidade = 1 metro (simulação).
-/// Pública para ser verificada em test/measure_calculations_test.dart.
-double polygonArea(List<Offset> points) {
-  if (points.length < 3) return 0;
-  double sum = 0;
-  for (int i = 0; i < points.length; i++) {
-    final Offset current = points[i];
-    final Offset next = points[(i + 1) % points.length];
-    sum += current.dx * next.dy - next.dx * current.dy;
-  }
-  return (sum / 2).abs();
-}
+/// Coordenada inicial e incremento ainda simulados até a captura GPS real.
+/// Os pontos passam a ser gravados no Drift, mas a origem das coordenadas
+/// continua determinística nesta etapa.
+const double _kInitialLatitude = -8.1800;
+const double _kInitialLongitude = -34.9200;
+const double _kCoordinateStep = 0.0001;
 
-/// Perímetro: soma das distâncias euclidianas. Com 2 pontos, é a distância
-/// entre eles (não vai e volta). Com 3 ou mais, o polígono é fechado.
-/// Pública para ser verificada em test/measure_calculations_test.dart.
-double polygonPerimeter(List<Offset> points) {
-  if (points.length < 2) return 0;
-  if (points.length == 2) return (points[1] - points[0]).distance;
-  double total = 0;
-  for (int i = 0; i < points.length; i++) {
-    total += (points[(i + 1) % points.length] - points[i]).distance;
-  }
-  return total;
-}
+/// Preenche o campo obrigatório `accuracy` do modelo. Não representa a
+/// precisão real do GPS; o aviso no topo da tela continua obrigatório.
+const double _kSimulatedAccuracy = 0.0;
 
-/// Ponto simulado. Não vem de GPS e não é persistido nesta etapa.
-class _MeasurePoint {
-  const _MeasurePoint(this.name, this.latitude, this.longitude);
+String _pointName(int index) =>
+    'P${(index + 1).toString().padLeft(2, '0')}';
 
-  final String name;
-  final double latitude;
-  final double longitude;
+/// Usa longitude como x e latitude como y apenas para o cálculo local.
+Offset _pointOffset(SurveyPoint point) =>
+    Offset(point.longitude, point.latitude);
 
-  /// Usa longitude como x e latitude como y apenas para o cálculo local.
-  Offset get offset => Offset(longitude, latitude);
-
-  String get coordinates =>
-      '${latitude.toStringAsFixed(2)}, ${longitude.toStringAsFixed(2)}';
-}
-
-/// Simulação explícita até a integração com flutter_offline_background_location.
-/// Não são dados reais de campo e não são gravados no Drift.
-const List<_MeasurePoint> _kSimulatedPoints = [
-  _MeasurePoint('P01', -8.1800, -34.9200),
-  _MeasurePoint('P02', -8.1810, -34.9210),
-  _MeasurePoint('P03', -8.1820, -34.9200),
-  _MeasurePoint('P04', -8.1830, -34.9220),
-];
+String _pointCoordinates(SurveyPoint point) =>
+    '${point.latitude.toStringAsFixed(2)}, ${point.longitude.toStringAsFixed(2)}';
 
 /// Tela "Medir terreno" do print 3: mapa placeholder e cálculos sobre pontos
-/// simulados. Sem GPS real, sem flutter_map e sem persistência.
+/// gravados no Drift. Ainda sem GPS real e sem flutter_map; as coordenadas
+/// continuam simuladas até a captura real existir.
 class MeasureScreen extends StatefulWidget {
-  const MeasureScreen({super.key});
+  const MeasureScreen({super.key, this.initialSurveyId});
+
+  /// Quando informado, carrega este levantamento em vez do mais recente.
+  final String? initialSurveyId;
 
   @override
   State<MeasureScreen> createState() => _MeasureScreenState();
 }
 
 class _MeasureScreenState extends State<MeasureScreen> {
-  final List<_MeasurePoint> _points = List<_MeasurePoint>.from(_kSimulatedPoints);
+  final SurveyRepository _surveyRepository = SurveyRepository(appDatabase);
+  final PointRepository _pointRepository = PointRepository(appDatabase);
 
-  List<Offset> get _offsets =>
-      _points.map((point) => point.offset).toList(growable: false);
+  String? _surveyId;
+  List<SurveyPoint> _points = const <SurveyPoint>[];
 
-  void _collectPoint() {
-    // Simulação determinística: incremento fixo sobre o último ponto.
-    // Substituir por leitura de GPS quando o CRUD e o Drift existirem.
-    final _MeasurePoint last = _points.last;
-    final String name = 'P${(_points.length + 1).toString().padLeft(2, '0')}';
-    setState(() {
-      _points.add(
-        _MeasurePoint(
-          name,
-          last.latitude + 0.0001,
-          last.longitude + 0.0001,
-        ),
-      );
-    });
+  @override
+  void initState() {
+    super.initState();
+    _loadInitialSurvey();
   }
 
-  void _showSoon() {
+  List<Offset> get _offsets =>
+      _points.map(_pointOffset).toList(growable: false);
+
+  /// Com `initialSurveyId`, prioriza o levantamento pedido. Se o id não for
+  /// encontrado, mantém o comportamento antigo de usar o mais recente.
+  Future<void> _loadInitialSurvey() async {
+    final String? requestedId = widget.initialSurveyId;
+    if (requestedId == null) {
+      await _loadExistingSurvey();
+      return;
+    }
+
+    final Survey? requested = await _surveyRepository.getSurveyById(requestedId);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Em breve',
-          style: TextStyle(
-            color: _colorSurface,
-            fontSize: 14,
-            fontWeight: FontWeight.w400,
-            height: 20 / 14,
-          ),
-        ),
-        backgroundColor: _colorText,
-      ),
+    if (requested == null) {
+      await _loadExistingSurvey();
+      return;
+    }
+
+    setState(() => _surveyId = requested.id);
+    await _loadPoints(requested.id);
+  }
+
+  /// Carrega pontos de um levantamento já existente, sem criar dados novos.
+  Future<void> _loadExistingSurvey() async {
+    final Survey? latest = await _surveyRepository.getLatestSurvey();
+    if (latest == null || !mounted) return;
+    setState(() => _surveyId = latest.id);
+    await _loadPoints(latest.id);
+  }
+
+  /// Recarrega a lista a partir do Drift para recalcular área e perímetro.
+  Future<void> _loadPoints(String surveyId) async {
+    final List<SurveyPoint> points =
+        await _pointRepository.watchPointsBySurvey(surveyId).first;
+    if (!mounted) return;
+    setState(() => _points = points);
+  }
+
+  /// Reaproveita o último levantamento local ou cria um quando ainda não há.
+  Future<String> _resolveSurveyId() async {
+    final String? existingId = _surveyId;
+    if (existingId != null) return existingId;
+
+    final Survey? latest = await _surveyRepository.getLatestSurvey();
+    if (latest != null) {
+      _surveyId = latest.id;
+      return latest.id;
+    }
+
+    await _surveyRepository.createSurvey(
+      name: 'Levantamento em campo',
+      description: '',
     );
+    final Survey? created = await _surveyRepository.getLatestSurvey();
+    if (created == null) {
+      throw StateError('Não foi possível criar o levantamento local.');
+    }
+    _surveyId = created.id;
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Novo levantamento criado. Você pode editá-lo na aba Levantamentos.',
+            style: TextStyle(
+              color: _colorSurface,
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              height: 20 / 14,
+            ),
+          ),
+          backgroundColor: _colorText,
+        ),
+      );
+    }
+    return created.id;
+  }
+
+  Future<void> _collectPoint() async {
+    final String surveyId = await _resolveSurveyId();
+    final SurveyPoint? last = _points.isEmpty ? null : _points.last;
+    final double lat =
+        last == null ? _kInitialLatitude : last.latitude + _kCoordinateStep;
+    final double lng =
+        last == null ? _kInitialLongitude : last.longitude + _kCoordinateStep;
+
+    await _pointRepository.addPoint(
+      surveyId: surveyId,
+      lat: lat,
+      lng: lng,
+      accuracy: _kSimulatedAccuracy,
+      source: 'manual',
+    );
+    await _loadPoints(surveyId);
   }
 
   Future<void> _confirmFinish() async {
@@ -121,7 +177,7 @@ class _MeasureScreenState extends State<MeasureScreen> {
             style: TextStyle(color: _colorText, fontSize: 18),
           ),
           content: const Text(
-            'Deseja finalizar o levantamento? Esta ação ainda não persiste os dados.',
+            'Deseja finalizar o levantamento? Os dados serão salvos apenas no banco local.',
             style: TextStyle(color: _colorSecondary, fontSize: 14),
           ),
           actions: [
@@ -138,10 +194,14 @@ class _MeasureScreenState extends State<MeasureScreen> {
       },
     );
     if (confirmed != true || !mounted) return;
+
+    final String surveyId = await _resolveSurveyId();
+    await _surveyRepository.finalizeSurvey(surveyId);
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
-          'Levantamento finalizado (simulação). A persistência será implementada na próxima etapa.',
+          'Levantamento finalizado e salvo no banco local.',
           style: TextStyle(
             color: _colorSurface,
             fontSize: 14,
@@ -187,9 +247,21 @@ class _MeasureScreenState extends State<MeasureScreen> {
               const SizedBox(height: 12),
               _ActionButtonRow(
                 firstLabel: 'Registrar anotações',
-                onFirst: _showSoon,
+                onFirst: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => NotesScreen(surveyId: _surveyId),
+                    ),
+                  );
+                },
                 secondLabel: 'Fotografar',
-                onSecond: _showSoon,
+                onSecond: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => PhotoScreen(surveyId: _surveyId),
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 24),
               _PointList(points: _points),
@@ -308,7 +380,7 @@ class _GpsWarningBanner extends StatelessWidget {
 class _MapPlaceholder extends StatelessWidget {
   const _MapPlaceholder({required this.points});
 
-  final List<_MeasurePoint> points;
+  final List<SurveyPoint> points;
 
   static const double _height = 320;
   // Posições proporcionais ilustrativas do print 3, não coordenadas reais.
@@ -357,7 +429,7 @@ class _MapPlaceholder extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        points[i].name,
+                        _pointName(i),
                         style: const TextStyle(
                           color: _colorSecondary,
                           fontSize: 11,
@@ -554,7 +626,7 @@ class _ActionButton extends StatelessWidget {
 class _PointList extends StatelessWidget {
   const _PointList({required this.points});
 
-  final List<_MeasurePoint> points;
+  final List<SurveyPoint> points;
 
   @override
   Widget build(BuildContext context) {
@@ -570,13 +642,13 @@ class _PointList extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        for (final _MeasurePoint point in points)
+        for (int i = 0; i < points.length; i++)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
               children: [
                 Text(
-                  point.name,
+                  _pointName(i),
                   style: const TextStyle(
                     color: _colorSurface,
                     fontSize: 12,
@@ -586,7 +658,7 @@ class _PointList extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    '• ${point.coordinates}',
+                    '• ${_pointCoordinates(points[i])}',
                     style: TextStyle(
                       color: _colorSurface.withValues(alpha: 0.7),
                       fontSize: 11,

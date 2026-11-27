@@ -74,3 +74,9 @@ class Points extends Table implements SyncableTable {
   @override
   Set<Column> get primaryKey => {id};
 }
+
+/// Instância única do banco local, injetada nos repositórios das telas.
+///
+/// Mantida fora do ciclo de vida de um widget para que a navegação entre telas
+/// preserve os mesmos dados offline.
+final AppDatabase appDatabase = AppDatabase();

@@ -2,8 +2,15 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 
+import '../../data/app_database.dart';
+import '../../data/repositories/survey_repository.dart';
+import '../../models/survey.dart';
 import '../../services/auth_service.dart';
 import '../measure/measure_screen.dart';
+import '../notes/notes_screen.dart';
+import '../photo/photo_screen.dart';
+import '../survey_details/survey_details_screen.dart';
+import '../surveys/surveys_screen.dart';
 
 // Tokens extraídos de DESIGN.md. Valores que só existem no print 2 estão
 // marcados em comentário no ponto de uso.
@@ -17,7 +24,11 @@ const Color _colorOnPrimary = Color(0xFFFFFFFF);
 
 /// Aba Início da MainShell, conforme o print 2 do MVP.
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.onOpenSurveysTap});
+
+  /// Callback injetado pela MainShell para trocar para a aba Levantamentos
+  /// sem empilhar uma segunda MainShell.
+  final VoidCallback? onOpenSurveysTap;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -28,6 +39,14 @@ class _HomeScreenState extends State<HomeScreen> {
   // apenas para a leitura síncrona de currentUser; ela não assina o stream de
   // autenticação (quem faz isso é o AuthGate) e é descartada junto com a tela.
   final AuthService _authService = AuthService();
+  final SurveyRepository _surveyRepository = SurveyRepository(appDatabase);
+  late final Stream<List<Survey>> _surveysStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _surveysStream = _surveyRepository.watchAllSurveys();
+  }
 
   @override
   void dispose() {
@@ -47,6 +66,21 @@ class _HomeScreenState extends State<HomeScreen> {
       // Leitura local indisponível: mantém o fallback.
     }
     return 'você';
+  }
+
+  void _openSurveysTab() {
+    final VoidCallback? onOpenSurveysTap = widget.onOpenSurveysTap;
+    if (onOpenSurveysTap != null) {
+      onOpenSurveysTap();
+      return;
+    }
+    // Fallback quando a Home é exibida fora da MainShell (por exemplo, em um
+    // teste isolado): abre a lista sem a casca de navegação inferior.
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const SurveysScreen(),
+      ),
+    );
   }
 
   void _showSoon() {
@@ -132,11 +166,37 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 24),
-              _SurveyStatusCard(
-                label: 'Levantamento em andamento',
-                // CRUD de levantamentos ainda não implementado: sem dado fictício.
-                value: 'Nenhum levantamento em andamento',
-                onTap: _showSoon,
+              StreamBuilder<List<Survey>>(
+                stream: _surveysStream,
+                builder: (context, snapshot) {
+                  // O repositório já filtra deleted = false; a checagem aqui
+                  // mantém a regra explícita também na camada de UI.
+                  final List<Survey> activeSurveys = snapshot.data
+                          ?.where((survey) => !survey.deleted)
+                          .toList(growable: false) ??
+                      const <Survey>[];
+                  final Survey? latest = activeSurveys.isEmpty
+                      ? null
+                      : activeSurveys.first;
+                  return _SurveyStatusCard(
+                    label: 'Levantamento em andamento',
+                    value: latest?.name ?? 'Nenhum levantamento em andamento',
+                    // Com levantamento recente abre o detalhe; sem nada, vai
+                    // para a aba Levantamentos onde o usuário pode criar um.
+                    onTap: latest == null
+                        ? _openSurveysTab
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => SurveyDetailsScreen(
+                                  surveyId: latest.id,
+                                  surveyName: latest.name,
+                                ),
+                              ),
+                            );
+                          },
+                  );
+                },
               ),
               const SizedBox(height: 16),
               const _SectionHeader(title: 'Acesso rápido'),
@@ -159,11 +219,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  const Expanded(
+                  // Acesso provisório até existir roteamento definitivo.
+                  Expanded(
                     child: _QuickAccessCard(
                       icon: Icons.edit_note,
                       title: 'Registrar anotações',
                       subtitle: 'Observações do campo',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const NotesScreen(),
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -171,11 +239,19 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  const Expanded(
+                  // Acesso provisório até existir roteamento definitivo.
+                  Expanded(
                     child: _QuickAccessCard(
                       icon: Icons.photo_camera,
                       title: 'Fotografar',
                       subtitle: 'Registrar evidências',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const PhotoScreen(),
+                          ),
+                        );
+                      },
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -189,11 +265,35 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
               const SizedBox(height: 16),
-              _SurveyStatusCard(
-                label: 'Último levantamento',
-                // CRUD de levantamentos ainda não implementado: sem dado fictício.
-                value: 'Nenhum levantamento finalizado ainda',
-                onTap: _showSoon,
+              StreamBuilder<List<Survey>>(
+                stream: _surveysStream,
+                builder: (context, snapshot) {
+                  final List<Survey> activeSurveys = snapshot.data
+                          ?.where((survey) => !survey.deleted)
+                          .toList(growable: false) ??
+                      const <Survey>[];
+                  final Survey? latest = activeSurveys.isEmpty
+                      ? null
+                      : activeSurveys.first;
+                  return _SurveyStatusCard(
+                    label: 'Último levantamento',
+                    value:
+                        latest?.name ?? 'Nenhum levantamento finalizado ainda',
+                    // Id e nome vão para o detalhe, que busca os dados reais.
+                    onTap: latest == null
+                        ? _showSoon
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => SurveyDetailsScreen(
+                                  surveyId: latest.id,
+                                  surveyName: latest.name,
+                                ),
+                              ),
+                            );
+                          },
+                  );
+                },
               ),
               const SizedBox(height: 24),
             ],
@@ -317,8 +417,8 @@ class _QuickAccessCard extends StatelessWidget {
         color: _colorBackground,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
-          // Destinos ainda não existem: feedback em vez de navegação inválida.
-          // "Medir terreno" já recebe um onTap próprio na Home.
+          // Cards sem onTap explícito ainda não têm destino: feedback em vez
+          // de navegação inválida. Os demais recebem um onTap próprio na Home.
           onTap: onTap ??
               () {
                 ScaffoldMessenger.of(context).showSnackBar(

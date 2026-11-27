@@ -14,7 +14,7 @@ const Color _colorOnPrimary = Color(0xFFFFFFFF);
 /// Tela de login descrita no print 1 do MVP.
 ///
 /// A navegação para cadastro/recuperação é injetada por quem montar a tela;
-/// na Etapa 3.6 o `AuthGate` fará essa ligação.
+/// o `AuthGate` já liga os callbacks às telas de Cadastro e Recuperação.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({
     super.key,
